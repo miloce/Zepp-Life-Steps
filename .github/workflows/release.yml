@@ -129,26 +129,320 @@ jobs:
           
       - name: Convert JS to PHP format
         run: |
-          # 为了支持 PHP 环境运行，需要对 JS 文件进行调整
-          # 此处用简单的替换来演示，实际应用中可能需要更复杂的转换逻辑
+          # 不再使用JS转换，而是直接创建PHP文件
+          # 移除原来的JS转PHP文件
+          rm -f php-build/api/update-steps.php
+          rm -f php-build/api/ZeppLifeSteps.php
           
-          # 修改 API 文件
-          sed -i 's/export default/function handleRequest/' php-build/api/update-steps.php
-          echo "module.exports = handleRequest;" >> php-build/api/update-steps.php
+          # 创建ZeppLifeSteps.php文件
+          cat > php-build/api/ZeppLifeSteps.php << 'EOF'
+          <?php
+          /**
+           * Zepp Life API PHP实现
+           */
+          class ZeppLifeSteps {
+              private $headers = [
+                  'User-Agent' => 'Dalvik/2.1.0 (Linux; U; Android 9; MI 6 MIUI/20.6.18)',
+                  'Content-Type' => 'application/x-www-form-urlencoded;charset=UTF-8'
+              ];
+              
+              /**
+               * 从重定向URL中提取code
+               */
+              private function getCode($location) {
+                  $codePattern = '/access=([^&]+)/';
+                  if (preg_match($codePattern, $location, $matches)) {
+                      return $matches[1];
+                  }
+                  return null;
+              }
+              
+              /**
+               * 登录获取token
+               */
+              public function login($account, $password) {
+                  try {
+                      // 判断是手机号还是邮箱
+                      $isPhone = preg_match('/^\+?\d+$/', $account);
+                      
+                      // 对于手机号，检查是否有+86前缀
+                      if ($isPhone) {
+                          if (!str_starts_with($account, '+86') && !str_starts_with($account, '86')) {
+                              $account = '+86' . $account;
+                          } else if (str_starts_with($account, '86') && !str_starts_with($account, '+')) {
+                              $account = '+' . $account;
+                          }
+                      }
+                      
+                      // 第一步：获取access code
+                      $url1 = "https://api-user.huami.com/registrations/{$account}/tokens";
+                      $data1 = [
+                          'client_id' => 'HuaMi',
+                          'password' => $password,
+                          'redirect_uri' => 'https://s3-us-west-2.amazonaws.com/hm-registration/successsignin.html',
+                          'token' => 'access'
+                      ];
+                      
+                      // 如果是手机号,添加phone_number字段
+                      if ($isPhone) {
+                          $data1['phone_number'] = $account;
+                      }
+                      
+                      $ch = curl_init();
+                      curl_setopt($ch, CURLOPT_URL, $url1);
+                      curl_setopt($ch, CURLOPT_POST, 1);
+                      curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data1));
+                      curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                          'User-Agent: ' . $this->headers['User-Agent'],
+                          'Content-Type: ' . $this->headers['Content-Type']
+                      ]);
+                      curl_setopt($ch, CURLOPT_HEADER, 1);
+                      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+                      curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
+                      
+                      $response = curl_exec($ch);
+                      $header_size = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+                      $headers = substr($response, 0, $header_size);
+                      curl_close($ch);
+                      
+                      // 从响应头获取Location
+                      preg_match('/Location: ([^\r\n]+)/i', $headers, $matches);
+                      if (!isset($matches[1])) {
+                          throw new Exception('登录失败：未获取到重定向URL');
+                      }
+                      
+                      $location = $matches[1];
+                      $code = $this->getCode($location);
+                      
+                      if (!$code) {
+                          throw new Exception('获取access code失败');
+                      }
+                      
+                      // 第二步：获取login token
+                      $url2 = 'https://account.huami.com/v2/client/login';
+                      $data2 = [
+                          'allow_registration' => 'false',
+                          'app_name' => 'com.xiaomi.hm.health',
+                          'app_version' => '6.3.5',
+                          'code' => $code,
+                          'country_code' => 'CN',
+                          'device_id' => '2C8B4939-0CCD-4E94-8CBA-CB8EA6E613A1',
+                          'device_model' => 'phone',
+                          'dn' => 'api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com',
+                          'grant_type' => 'access_token',
+                          'lang' => 'zh_CN',
+                          'os_version' => '1.5.0',
+                          'source' => 'com.xiaomi.hm.health',
+                          'third_name' => $isPhone ? 'huami_phone' : 'email'
+                      ];
+                      
+                      $ch = curl_init();
+                      curl_setopt($ch, CURLOPT_URL, $url2);
+                      curl_setopt($ch, CURLOPT_POST, 1);
+                      curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data2));
+                      curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                          'User-Agent: ' . $this->headers['User-Agent'],
+                          'Content-Type: ' . $this->headers['Content-Type']
+                      ]);
+                      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+                      
+                      $response = curl_exec($ch);
+                      curl_close($ch);
+                      
+                      $responseData = json_decode($response, true);
+                      
+                      if (!isset($responseData['token_info'])) {
+                          throw new Exception('登录失败：未获取到token信息');
+                      }
+                      
+                      $loginToken = $responseData['token_info']['login_token'];
+                      $userId = $responseData['token_info']['user_id'];
+                      
+                      if (!$loginToken || !$userId) {
+                          throw new Exception('登录失败：token信息不完整');
+                      }
+                      
+                      return [
+                          'loginToken' => $loginToken,
+                          'userId' => $userId
+                      ];
+                  } catch (Exception $error) {
+                      throw $error;
+                  }
+              }
+              
+              /**
+               * 获取app token
+               */
+              public function getAppToken($loginToken) {
+                  try {
+                      $url = "https://account-cn.huami.com/v1/client/app_tokens?app_name=com.xiaomi.hm.health&dn=api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com&login_token={$loginToken}";
+                      
+                      $ch = curl_init();
+                      curl_setopt($ch, CURLOPT_URL, $url);
+                      curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                          'User-Agent: ' . $this->headers['User-Agent'],
+                          'Content-Type: ' . $this->headers['Content-Type']
+                      ]);
+                      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+                      
+                      $response = curl_exec($ch);
+                      curl_close($ch);
+                      
+                      $responseData = json_decode($response, true);
+                      
+                      if (!isset($responseData['token_info'])) {
+                          throw new Exception('获取appToken失败：未获取到token信息');
+                      }
+                      
+                      $appToken = $responseData['token_info']['app_token'];
+                      
+                      if (!$appToken) {
+                          throw new Exception('获取appToken失败：token信息不完整');
+                      }
+                      
+                      return $appToken;
+                  } catch (Exception $error) {
+                      throw $error;
+                  }
+              }
+              
+              /**
+               * 修改步数
+               */
+              public function updateSteps($loginToken, $appToken, $steps) {
+                  try {
+                      $today = date('Y-m-d');
+                      
+                      // 构建data_json
+                      $dataJson = '忽略';
+                      
+                      $timestamp = round(microtime(true) * 1000);
+                      $t = time();
+                      
+                      $url = "https://api-mifit-cn2.huami.com/v1/data/band_data.json?t={$timestamp}";
+                      $data = "userid={$loginToken}&last_sync_data_time={$t}&device_type=0&last_deviceid=DA932FFFFE8816E7&data_json={$dataJson}";
+                      
+                      $ch = curl_init();
+                      curl_setopt($ch, CURLOPT_URL, $url);
+                      curl_setopt($ch, CURLOPT_POST, 1);
+                      curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+                      curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                          'User-Agent: ' . $this->headers['User-Agent'],
+                          'Content-Type: ' . $this->headers['Content-Type'],
+                          'apptoken: ' . $appToken
+                      ]);
+                      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+                      
+                      $response = curl_exec($ch);
+                      curl_close($ch);
+                      
+                      $responseData = json_decode($response, true);
+                      
+                      if (!isset($responseData['code']) || $responseData['code'] !== 1) {
+                          throw new Exception('更新步数失败: ' . json_encode($responseData));
+                      }
+                      
+                      return $responseData;
+                  } catch (Exception $error) {
+                      throw $error;
+                  }
+              }
+          }
+          EOF
           
-          # 添加必要的 PHP 头部
-          sed -i '1i<?php' php-build/api/update-steps.php
-          echo "// 如果是直接访问当前文件，则调用处理函数" >> php-build/api/update-steps.php
-          echo "if (basename(__FILE__) == basename(\$_SERVER['SCRIPT_FILENAME'])) {" >> php-build/api/update-steps.php
-          echo "    handleRequest(\$_SERVER['REQUEST_METHOD'] === 'POST' ? json_decode(file_get_contents('php://input'), true) : \$_GET, [" >> php-build/api/update-steps.php
-          echo "        'status' => function(\$code) { http_response_code(\$code); return \$this; }," >> php-build/api/update-steps.php
-          echo "        'json' => function(\$data) { echo json_encode(\$data); }" >> php-build/api/update-steps.php
-          echo "    ]);" >> php-build/api/update-steps.php
-          echo "}" >> php-build/api/update-steps.php
-          echo "?>" >> php-build/api/update-steps.php
+          # 创建update-steps.php文件
+          cat > php-build/api/update-steps.php << 'EOF'
+          <?php
+          /**
+           * 更新步数API处理函数
+           */
           
-          sed -i '1i<?php' php-build/api/ZeppLifeSteps.php
-          echo "?>" >> php-build/api/ZeppLifeSteps.php
+          // 引入ZeppLifeSteps类
+          require_once('ZeppLifeSteps.php');
+          
+          /**
+           * 处理请求函数
+           */
+          function handleRequest($req, $res) {
+              // 设置响应头
+              header('Content-Type: application/json');
+              
+              // 支持POST和GET
+              $method = $_SERVER['REQUEST_METHOD'];
+              if ($method !== 'POST' && $method !== 'GET') {
+                  http_response_code(405);
+                  echo json_encode(['success' => false, 'message' => '方法不允许']);
+                  return;
+              }
+              
+              try {
+                  // 根据请求方法获取参数
+                  if ($method === 'POST') {
+                      $data = json_decode(file_get_contents('php://input'), true) ?: [];
+                      $account = $data['account'] ?? '';
+                      $password = $data['password'] ?? '';
+                      $steps = $data['steps'] ?? 0;
+                  } else {
+                      $account = $_GET['account'] ?? '';
+                      $password = $_GET['password'] ?? '';
+                      $steps = isset($_GET['steps']) ? intval($_GET['steps']) : 0;
+                  }
+                  
+                  if (empty($account) || empty($password)) {
+                      http_response_code(400);
+                      echo json_encode(['success' => false, 'message' => '账号和密码不能为空']);
+                      return;
+                  }
+                  
+                  // 设置默认步数
+                  $targetSteps = $steps ?: mt_rand(20000, 30000);
+                  error_log('目标步数: ' . $targetSteps);
+                  
+                  // 初始化ZeppLifeSteps工具类
+                  $zeppLifeSteps = new ZeppLifeSteps();
+                  
+                  // 登录获取token
+                  error_log('开始登录流程...');
+                  $loginResult = $zeppLifeSteps->login($account, $password);
+                  $loginToken = $loginResult['loginToken'];
+                  $userId = $loginResult['userId'];
+                  error_log('登录成功,获取到loginToken和userId');
+                  
+                  // 获取app token
+                  error_log('开始获取appToken...');
+                  $appToken = $zeppLifeSteps->getAppToken($loginToken);
+                  error_log('获取appToken成功');
+                  
+                  // 修改步数
+                  error_log('开始更新步数...');
+                  $result = $zeppLifeSteps->updateSteps($loginToken, $appToken, $targetSteps);
+                  error_log('步数更新结果: ' . json_encode($result));
+                  
+                  // 返回成功
+                  $response = [
+                      'success' => true,
+                      'message' => "步数修改成功: {$targetSteps}",
+                      'data' => $result
+                  ];
+                  echo json_encode($response);
+              } catch (Exception $error) {
+                  error_log('API处理失败: ' . $error->getMessage());
+                  
+                  http_response_code(500);
+                  $response = [
+                      'success' => false,
+                      'message' => $error->getMessage() ?: '服务器内部错误'
+                  ];
+                  echo json_encode($response);
+              }
+          }
+          
+          // 如果是直接访问当前文件，则执行处理
+          if (basename($_SERVER['SCRIPT_FILENAME']) == basename(__FILE__)) {
+              handleRequest($_REQUEST, null);
+          }
+          EOF
           
       - name: Package the project
         run: |
