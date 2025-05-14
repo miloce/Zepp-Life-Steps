@@ -25,13 +25,13 @@ jobs:
       - name: Build Next.js project and export static HTML
         run: |
           npm run build
-          npm run export
         
       - name: Create PHP wrapper structure
         run: |
           mkdir -p php-build
           # 复制 export 生成的静态文件
           cp -r out/. php-build/
+          cp -r public/. php-build/
           
           # 创建 PHP 入口文件
           cat > php-build/index.php << 'EOF'

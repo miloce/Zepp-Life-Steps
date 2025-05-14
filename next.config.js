@@ -19,7 +19,8 @@ const nextConfig = {
   experimental: {
     webVitalsAttribution: [],
     disablePostcssPresetEnv: true
-  }
+  },
+  output: 'export',
 }
 
 module.exports = nextConfig 
