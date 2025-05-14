@@ -57,14 +57,47 @@ jobs:
           
           # 创建简单的 PHP API 代理，允许 Next.js 应用访问 API
           mkdir -p php-build/api
+          
+          # 创建 .htaccess 文件支持无后缀访问
+          cat > php-build/.htaccess << 'EOF'
+          <IfModule mod_rewrite.c>
+              RewriteEngine On
+              RewriteBase /
+
+              # 处理API请求 (没有后缀的URL重定向到相应的PHP文件)
+              RewriteCond %{REQUEST_FILENAME} !-f
+              RewriteCond %{REQUEST_FILENAME} !-d
+              RewriteRule ^api/([^/]+)/?$ api/$1.php [L,QSA]
+          </IfModule>
+          EOF
+          
+          # 创建API目录的.htaccess
+          cat > php-build/api/.htaccess << 'EOF'
+          <IfModule mod_rewrite.c>
+              RewriteEngine On
+              RewriteBase /api/
+
+              # 处理API请求
+              RewriteCond %{REQUEST_FILENAME} !-f
+              RewriteCond %{REQUEST_FILENAME} !-d
+              RewriteRule ^([^/]+)/?$ $1.php [L,QSA]
+          </IfModule>
+          EOF
+          
           cat > php-build/api/index.php << 'EOF'
           <?php
           header('Content-Type: application/json');
           
           // 根据请求路径进行路由分发
-          $path = $_SERVER['PATH_INFO'] ?? '';
+          $requestUri = $_SERVER['REQUEST_URI'] ?? '';
+          $path = '';
           
-          if ($path == '/update-steps') {
+          // 解析请求路径
+          if (preg_match('/\/api\/([^\/\?]+)/', $requestUri, $matches)) {
+              $path = $matches[1];
+          }
+          
+          if ($path == 'update-steps') {
             include_once('update-steps.php');
           } else {
             http_response_code(404);
@@ -105,6 +138,13 @@ jobs:
           
           # 添加必要的 PHP 头部
           sed -i '1i<?php' php-build/api/update-steps.php
+          echo "// 如果是直接访问当前文件，则调用处理函数" >> php-build/api/update-steps.php
+          echo "if (basename(__FILE__) == basename(\$_SERVER['SCRIPT_FILENAME'])) {" >> php-build/api/update-steps.php
+          echo "    handleRequest(\$_SERVER['REQUEST_METHOD'] === 'POST' ? json_decode(file_get_contents('php://input'), true) : \$_GET, [" >> php-build/api/update-steps.php
+          echo "        'status' => function(\$code) { http_response_code(\$code); return \$this; }," >> php-build/api/update-steps.php
+          echo "        'json' => function(\$data) { echo json_encode(\$data); }" >> php-build/api/update-steps.php
+          echo "    ]);" >> php-build/api/update-steps.php
+          echo "}" >> php-build/api/update-steps.php
           echo "?>" >> php-build/api/update-steps.php
           
           sed -i '1i<?php' php-build/api/ZeppLifeSteps.php
